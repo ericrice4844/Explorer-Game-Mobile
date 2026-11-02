@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { B, BIOMES, STYLES, styleFor, ADVANCES, AGES } from '../js/game/data.js';
+import { B, BIOMES, STYLES, styleFor, ADVANCES, AGES, MODES } from '../js/game/data.js';
 import { W, H, decodeMask, generateTerrain, tileOf, idx, chebyshev } from '../js/game/world.js';
 import { findPath } from '../js/game/path.js';
 import * as G from '../js/game/game.js';
@@ -8,7 +8,7 @@ import { planExpedition, launchExpedition, capLoot } from '../js/game/expedition
 import {
   diplomacyOptions, giveGift, attackCiv, openTradeRoute, civStrength,
 } from '../js/game/civs.js';
-import { endTurn } from '../js/game/turn.js';
+import { endTurn, catchUp } from '../js/game/turn.js';
 import { playBot } from './bot.js';
 
 const biomeAt = (t, lat, lon) => {
@@ -218,4 +218,49 @@ test('a bot can play through the ages without errors', () => {
     for (const k of Object.keys(s.res)) assert.ok(Number.isFinite(s.res[k]) && s.res[k] >= 0, `${k} is valid`);
     assert.ok(G.deserialize(G.serialize(s)).turn === s.turn);
   }
+});
+
+test('quick play is fast to win; epic is the long game', () => {
+  let wins = 0;
+  const combos = [['settled', 'peaceful'], ['nomadic', 'warlike'], ['seafaring', 'mercantile'], ['settled', 'warlike']];
+  combos.forEach(([lifestyle, temperament], i) => {
+    const s = G.newGame({ seed: 100 + i, lifestyle, temperament, mode: 'quick' });
+    assert.equal(s.mode, 'quick');
+    playBot(s, 125, i + 1);
+    if (s.won) {
+      wins++;
+      assert.ok(s.wonTurn <= MODES.quick.turnLimit, `won within the turn limit (${s.wonTurn})`);
+    } else {
+      assert.ok(s.over, 'quick game ends at the turn limit');
+    }
+  });
+  assert.ok(wins >= 3, `bot should usually win quick play (won ${wins}/4)`);
+  const epic = G.newGame({ seed: 5, mode: 'epic' });
+  playBot(epic, 120, 5);
+  assert.ok(!epic.won && !epic.over, 'epic is not over after 120 turns');
+});
+
+test('epic worlds keep turning while the player is away', () => {
+  const s = G.newGame({ seed: 9, mode: 'epic' });
+  const t0 = s.turn;
+  const now = Date.now();
+  s.lastPlayed = now - 65 * 60000; // 65 minutes away
+  const r = catchUp(s, now);
+  assert.equal(r.turns, 3);
+  assert.equal(s.turn, t0 + 3);
+  // Capped for very long absences.
+  s.lastPlayed = now - 30 * 24 * 3600000;
+  assert.equal(catchUp(s, now).turns, MODES.epic.idleMaxTurns);
+  // Quick play never advances on its own.
+  const q = G.newGame({ seed: 9, mode: 'quick' });
+  q.lastPlayed = now - 3600000;
+  assert.equal(catchUp(q, now).turns, 0);
+});
+
+test('saves from before game modes load as epic games', () => {
+  const s = G.newGame({ seed: 2 });
+  const json = JSON.parse(G.serialize(s));
+  delete json.mode;
+  const loaded = G.deserialize(JSON.stringify(json));
+  assert.equal(loaded.mode, 'epic');
 });

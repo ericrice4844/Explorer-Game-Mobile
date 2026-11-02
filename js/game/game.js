@@ -2,7 +2,7 @@
 // advances, ages and save/load. Pure logic — safe to run under Node.
 import {
   AGES, ADVANCES, BUILDINGS, BIOMES, B, DEPOSITS, RESOURCE_KEYS, STYLES, styleFor,
-  VICTORY_EXPLORED_FRACTION, isWaterBiome,
+  MODES, isWaterBiome,
 } from './data.js';
 import { Rng } from './rng.js';
 import {
@@ -13,6 +13,30 @@ import { findPath } from './path.js';
 import { generateCivs } from './civs.js';
 
 export const SAVE_VERSION = 1;
+
+export function modeOf(state) {
+  return MODES[state.mode] || MODES.epic;
+}
+
+// Scale a cost table by the game mode.
+export function modeCost(state, cost) {
+  const m = modeOf(state).costMult;
+  return m === 1 ? cost : scaleCost(cost, m);
+}
+
+export function ageCost(state, age) {
+  return modeCost(state, AGES[age].cost);
+}
+
+export function ageReq(state, age) {
+  const m = modeOf(state);
+  const r = AGES[age].req;
+  const out = {};
+  if (r.cities) out.cities = Math.max(2, Math.round(r.cities * m.cityReqMult));
+  if (r.explored) out.explored = Math.round(r.explored * m.ageReqMult);
+  if (r.contacts) out.contacts = r.contacts;
+  return out;
+}
 
 export function emptyRes() {
   return Object.fromEntries(RESOURCE_KEYS.map((k) => [k, 0]));
@@ -86,13 +110,16 @@ function pickStart(terrain, rng, lifestyle) {
  */
 export function newGame(opts = {}) {
   const seed = (opts.seed ?? Math.floor(Math.random() * 2 ** 31)) >>> 0;
+  const mode = MODES[opts.mode] ? opts.mode : 'epic';
   const lifestyle = opts.lifestyle || 'settled';
   const temperament = opts.temperament || 'peaceful';
   const style = styleFor(lifestyle, temperament);
   const terrain = generateTerrain(seed);
   const state = {
     version: SAVE_VERSION,
+    mode,
     seed,
+    lastPlayed: Date.now(),
     rng: (seed * 2654435761) >>> 0,
     turn: 1,
     year: AGES[0].startYear,
@@ -128,7 +155,7 @@ export function newGame(opts = {}) {
     over: false,
   };
   const rng = rngOf(state);
-  Object.assign(state.res, { food: 60, wood: 30, stone: 10, clothing: 15 });
+  Object.assign(state.res, MODES[mode].startRes);
   const start = pickStart(terrain, rng, lifestyle);
   state.cities.push({
     id: newId(state, 'c'),
@@ -142,7 +169,7 @@ export function newGame(opts = {}) {
     founded: state.turn,
   });
   if (lifestyle === 'seafaring') state.advances.push('rafts');
-  state.civs = generateCivs(state, terrain, rng, start);
+  state.civs = generateCivs(state, terrain, rng, start, MODES[mode].civs);
   reveal(state, start.x, start.y, 4);
   addLog(state, '🔥', `${state.player.leader.name} gathers the people of ${state.player.civName} at ${state.cities[0].name}.`);
   return state;
@@ -168,12 +195,14 @@ export function hasAdvance(state, id) {
 export function getCaps(state) {
   const c = {
     seaLevel: 0, landSpeed: 2, seaSpeed: 2, air: 0, airSpeed: 25,
-    endurance: 4 + Math.floor(state.age / 2), reveal: 2,
+    endurance: 4 + Math.floor(state.age / 2) + modeOf(state).endurance, reveal: 2 + modeOf(state).reveal,
     coldResist: 0, heatResist: 0, jungleResist: 0, seaResist: 0, hazardMult: 1,
     carry: 1, forage: 1, settleRange: 8, tradeRange: 8, maxExpeditions: 1 + Math.ceil(state.age / 2),
     foodMult: 1, knowledgeMult: 1, strengthMult: 1,
   };
   const p = state.player;
+  c.landSpeed += modeOf(state).speed;
+  c.seaSpeed += modeOf(state).speed;
   if (p.lifestyle === 'nomadic') { c.landSpeed += 1; c.foodMult -= 0.25; }
   if (p.lifestyle === 'seafaring') { c.seaSpeed += 1; }
   if (p.temperament === 'peaceful') { c.hazardMult -= 0.2; c.knowledgeMult += 0.25; }
@@ -346,7 +375,8 @@ export function cityReports(state) {
       for (const [k, v] of Object.entries(def?.yields || {})) out[k] = (out[k] || 0) + v;
     }
     out.knowledge = (out.knowledge || 0) + city.pop * 0.25;
-    for (const k of Object.keys(out)) out[k] = Math.round(out[k] * 10) / 10;
+    const ym = modeOf(state).yieldMult;
+    for (const k of Object.keys(out)) out[k] = Math.round(out[k] * ym * 10) / 10;
     reports.push({ city, worked, out, upkeep: city.pop });
   }
   return reports;
@@ -403,6 +433,10 @@ export function totalStrength(state) {
 }
 
 // ---------- settling ----------
+export function growthNeed(state, city) {
+  return Math.max(4, Math.round((8 + 3 * city.pop) * modeOf(state).growthMult));
+}
+
 export function settleCost(state) {
   const mult = state.player.lifestyle === 'settled' ? 0.7 : 1;
   // Each new settlement is harder to supply than the last.
@@ -471,10 +505,11 @@ export function buildingOptions(state, city) {
   const terrain = terrainOf(state);
   return BUILDINGS.filter((b) => b.age <= state.age).map((b) => {
     let reason = null;
+    const cost = modeCost(state, b.cost);
     if (city.buildings.includes(b.id)) reason = 'Built';
     else if (b.coastal && !isCoastalLand(terrain, city.x, city.y)) reason = 'Needs coast';
-    else if (!canAfford(state, b.cost)) reason = 'Too costly';
-    return { def: b, ok: !reason, reason };
+    else if (!canAfford(state, cost)) reason = 'Too costly';
+    return { def: b, cost, ok: !reason, reason };
   });
 }
 
@@ -482,7 +517,7 @@ export function build(state, cityId, buildingId) {
   const city = state.cities.find((c) => c.id === cityId);
   const opt = city && buildingOptions(state, city).find((o) => o.def.id === buildingId);
   if (!opt || !opt.ok) return { ok: false, reason: opt?.reason || 'Unavailable' };
-  pay(state, opt.def.cost);
+  pay(state, opt.cost);
   city.buildings.push(buildingId);
   addLog(state, opt.def.icon, `${city.name} built a ${opt.def.name}.`);
   return { ok: true };
@@ -501,7 +536,7 @@ export function advanceStatus(state, adv) {
   if (adv.needsDeposit && state.player.lifestyle !== 'nomadic' && !depositKnown(state, adv.needsDeposit)) {
     return { ok: false, reason: `Discover ${DEPOSITS[adv.needsDeposit].name} first` };
   }
-  if (!canAfford(state, adv.cost)) return { ok: false, reason: 'Too costly' };
+  if (!canAfford(state, modeCost(state, adv.cost))) return { ok: false, reason: 'Too costly' };
   return { ok: true };
 }
 
@@ -509,7 +544,7 @@ export function learnAdvance(state, id) {
   const adv = ADVANCES.find((a) => a.id === id);
   const st = adv && advanceStatus(state, adv);
   if (!st || !st.ok) return { ok: false, reason: st?.reason || 'Unknown' };
-  pay(state, adv.cost);
+  pay(state, modeCost(state, adv.cost));
   state.advances.push(id);
   addLog(state, adv.icon, `Your people learned ${adv.name}.`);
   return { ok: true };
@@ -520,20 +555,22 @@ export function ageStatus(state) {
   const next = AGES[state.age + 1];
   if (!next) return { ok: false, final: true, reason: 'You have reached the final age.' };
   const reqs = [];
-  if (next.req.cities) reqs.push({ label: `${next.req.cities} settlements`, met: state.cities.length >= next.req.cities, have: state.cities.length });
-  if (next.req.explored) reqs.push({ label: `${next.req.explored} tiles mapped`, met: state.exploredCount >= next.req.explored, have: state.exploredCount });
-  if (next.req.contacts) {
+  const req = ageReq(state, next.id);
+  const cost = ageCost(state, next.id);
+  if (req.cities) reqs.push({ label: `${req.cities} settlements`, met: state.cities.length >= req.cities, have: state.cities.length });
+  if (req.explored) reqs.push({ label: `${req.explored} tiles mapped`, met: state.exploredCount >= req.explored, have: state.exploredCount });
+  if (req.contacts) {
     const met = state.civs.filter((c) => c.met).length;
-    reqs.push({ label: `Contact ${next.req.contacts} peoples`, met: met >= next.req.contacts, have: met });
+    reqs.push({ label: `Contact ${req.contacts} peoples`, met: met >= req.contacts, have: met });
   }
-  const affordable = canAfford(state, next.cost);
-  return { ok: affordable && reqs.every((r) => r.met), next, reqs, affordable };
+  const affordable = canAfford(state, cost);
+  return { ok: affordable && reqs.every((r) => r.met), next, reqs, affordable, cost };
 }
 
 export function advanceAge(state) {
   const st = ageStatus(state);
   if (!st.ok) return { ok: false, reason: st.reason || 'Requirements not met' };
-  pay(state, st.next.cost);
+  pay(state, st.cost);
   state.age = st.next.id;
   state.year = Math.max(state.year, st.next.startYear);
   addLog(state, '🏛️', `${state.player.civName} enters the ${st.next.name}!`);
@@ -541,9 +578,10 @@ export function advanceAge(state) {
 }
 
 export function checkVictory(state) {
-  if (!state.won && state.age === AGES.length - 1 && exploredFraction(state) >= VICTORY_EXPLORED_FRACTION) {
+  if (!state.won && state.age === AGES.length - 1 && exploredFraction(state) >= modeOf(state).victory) {
     state.won = true;
-    addLog(state, '🌍', 'The world is mapped! Your explorers have charted half the globe.');
+    state.wonTurn = state.turn;
+    addLog(state, '🌍', `The world is mapped! Your explorers have charted ${Math.round(modeOf(state).victory * 100)}% of the globe.`);
     return true;
   }
   return false;
@@ -588,5 +626,7 @@ export function deserialize(json) {
   const explored = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) explored[i] = (bits[i >> 3] >> (i & 7)) & 1;
   data.explored = explored;
+  if (!data.mode) data.mode = 'epic';
+  if (!data.lastPlayed) data.lastPlayed = Date.now();
   return data;
 }

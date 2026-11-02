@@ -88,6 +88,28 @@ export const AGES = [
 
 export const VICTORY_EXPLORED_FRACTION = 0.5;
 
+// Game modes. Quick Play compresses the whole journey into a 10–15 minute game;
+// Epic Journey is the full-length game, and the world keeps turning while you are away.
+export const MODES = {
+  quick: {
+    id: 'quick', name: 'Quick Play', icon: '⚡', blurb: '10–15 minutes',
+    desc: 'A compressed race through the ages. Everything is cheaper and faster. Map 15% of the world in the Modern Age within 120 turns.',
+    costMult: 0.45, ageReqMult: 0.35, cityReqMult: 0.6, yieldMult: 1.4, growthMult: 0.6,
+    endurance: 2, speed: 1, reveal: 1, civs: 26, victory: 0.15, turnLimit: 120,
+    startRes: { food: 120, wood: 80, stone: 40, clothing: 40 },
+    yearsPerTurnMult: 3,
+  },
+  epic: {
+    id: 'epic', name: 'Epic Journey', icon: '🌍', blurb: 'Many sessions',
+    desc: 'The full journey from 10,000 BCE. Map half the world in the Modern Age. Your world keeps turning while you are away: one season passes every 20 minutes (up to 36).',
+    costMult: 1, ageReqMult: 1, cityReqMult: 1, yieldMult: 1, growthMult: 1,
+    endurance: 0, speed: 0, reveal: 0, civs: 34, victory: VICTORY_EXPLORED_FRACTION, turnLimit: 0,
+    startRes: { food: 60, wood: 30, stone: 10, clothing: 15 },
+    yearsPerTurnMult: 1,
+    idleMinutesPerTurn: 20, idleMaxTurns: 36,
+  },
+};
+
 export const LIFESTYLES = {
   nomadic: { name: 'Nomadic', icon: '🐎', desc: 'Expeditions travel faster and eat less. Settlements yield a little less.' },
   settled: { name: 'Settled', icon: '🌾', desc: 'Settlements grow faster and cost less to found.' },

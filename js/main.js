@@ -1,7 +1,7 @@
 // App controller: screens, HUD, map interaction and all panels.
 import {
   AGES, ADVANCES, BIOMES, DEPOSITS, LIFESTYLES, TEMPERAMENTS, STYLES, RESOURCES, RESOURCE_KEYS,
-  PARTY_SIZES, CIV_LEVELS, styleFor, VICTORY_EXPLORED_FRACTION,
+  PARTY_SIZES, CIV_LEVELS, styleFor, MODES,
 } from './game/data.js';
 import * as G from './game/game.js';
 import { latLon, idx, distance, W, H } from './game/world.js';
@@ -10,13 +10,14 @@ import {
   diplomacyOptions, giveGift, openTradeRoute, shareKnowledge, demandTribute, attackCiv, battleOdds,
   civStrength, relationLabel, maxTradeRoutes, domesticRouteOptions, openDomesticRoute, CIV_SPRITE_AGE,
 } from './game/civs.js';
-import { endTurn } from './game/turn.js';
+import { endTurn, catchUp } from './game/turn.js';
 import { MapView } from './render/map.js';
 import { drawSettlement, drawUnit, drawTerrainDetail, biomeColor } from './render/sprites.js';
 import { drawPortrait, SKIN_TONES, HAIR_COLORS, HAIR_STYLES, BEARDS } from './render/portrait.js';
 import { hash2 } from './game/rng.js';
 
-const SAVE_KEY = 'ages-of-exploration-save-v1';
+const LEGACY_SAVE_KEY = 'ages-of-exploration-save-v1';
+const saveKey = (mode) => `ages-of-exploration-${mode}-v1`;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -34,13 +35,36 @@ const EMBLEMS = ['☀️', '🐺', '🦅', '🌊', '🌳', '🐎', '⭐', '⛰�
 // ---------------- persistence ----------------
 function save() {
   if (!state) return;
-  try { localStorage.setItem(SAVE_KEY, G.serialize(state)); } catch { /* storage may be full or blocked */ }
+  state.lastPlayed = Date.now();
+  try { localStorage.setItem(saveKey(state.mode), G.serialize(state)); } catch { /* storage may be full or blocked */ }
 }
-function loadSave() {
+function readStorage(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function loadSave(mode) {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    // Older saves (before game modes existed) become Epic Journey games.
+    const raw = readStorage(saveKey(mode)) || (mode === 'epic' ? readStorage(LEGACY_SAVE_KEY) : null);
     return raw ? G.deserialize(raw) : null;
   } catch { return null; }
+}
+function saveSummary(mode) {
+  const s = loadSave(mode);
+  if (!s) return null;
+  return { turn: s.turn, age: AGES[s.age].short, civ: s.player.civName, done: s.won || s.over };
+}
+
+// Track real playing time (for Quick Play results).
+setInterval(() => {
+  if (state && !document.hidden && !$('#game-screen').classList.contains('hidden') && !state.won && !state.over) {
+    state.playMs = (state.playMs || 0) + 1000;
+  }
+}, 1000);
+
+function fmtDuration(ms) {
+  const m = Math.floor((ms || 0) / 60000);
+  const sec = Math.floor(((ms || 0) % 60000) / 1000);
+  return `${m}m ${String(sec).padStart(2, '0')}s`;
 }
 
 // ---------------- helpers ----------------
@@ -146,6 +170,7 @@ function randomSetup() {
     emblem: r(EMBLEMS),
     lifestyle,
     temperament,
+    mode: setup?.mode || 'quick',
   };
 }
 
@@ -155,6 +180,11 @@ function renderSetup() {
   const st = STYLES[styleKey];
   const tb = (k, v) => `<button class="chip${s.leader[k] === v ? ' sel' : ''}" data-set="leader.${k}" data-val="${esc(v)}">${esc(v)}</button>`;
   $('#setup-body').innerHTML = `
+    <div class="section">
+      <h3>Game Mode</h3>
+      <div class="choice-grid" style="grid-template-columns:1fr 1fr">${Object.values(MODES).map((m) => `<button class="choice${s.mode === m.id ? ' sel' : ''}" data-set="mode" data-val="${m.id}"><span class="big">${m.icon}</span><b>${m.name}</b>${m.blurb}</button>`).join('')}</div>
+      <p style="font-size:13px;margin:6px 0">${esc(MODES[s.mode].desc)}${readStorage(saveKey(s.mode)) ? ' <b>Starting a new game replaces your saved ' + esc(MODES[s.mode].name) + ' game.</b>' : ''}</p>
+    </div>
     <div class="section">
       <h3>Your Leader</h3>
       <div class="row">
@@ -249,6 +279,7 @@ function beginGame() {
     emblem: s.emblem,
     lifestyle: s.lifestyle,
     temperament: s.temperament,
+    mode: s.mode,
   });
   startGameView();
   const cap = state.cities[0];
@@ -258,7 +289,9 @@ function beginGame() {
     title: 'The Journey Begins',
     html: `<p><b>${esc(state.player.leader.name)}</b>, ${esc(G.leaderTitle(state))} of <b>${esc(state.player.civName)}</b>, your people have made camp at <b>${esc(cap.name)}</b> (${Math.abs(lat).toFixed(0)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(0)}°${lon >= 0 ? 'E' : 'W'}).</p>
       <p>The world beyond is unknown. Send <b>🧭 expeditions</b> — they cost food and clothing, but may return with gold, iron and luxuries, and they map the land as they go.</p>
-      <p><b>🏕️ Settle</b> new lands, meet <b>🤝 other peoples</b>, learn <b>📜 advances</b> and move through the ages. Map half the world in the Modern Age to win.</p>`,
+      <p><b>🏕️ Settle</b> new lands, meet <b>🤝 other peoples</b>, learn <b>📜 advances</b> and move through the ages. ${state.mode === 'quick'
+    ? `<b>⚡ Quick Play:</b> map ${Math.round(MODES.quick.victory * 100)}% of the world in the Modern Age within ${MODES.quick.turnLimit} turns.`
+    : `<b>🌍 Epic Journey:</b> map half the world in the Modern Age. While you are away, a season passes every ${MODES.epic.idleMinutesPerTurn} minutes, so come back to check on your people.`}</p>`,
   });
   save();
 }
@@ -287,7 +320,9 @@ function updateHud() {
   const inc = G.incomeSummary(state);
   const caps = G.getCaps(state);
   $('#hud-civ').textContent = `${state.player.leader.name} · ${state.player.civName}`;
-  $('#hud-age').textContent = `${AGES[state.age].name} · ${G.formatYear(state.year)} · Turn ${state.turn} · 🗺️ ${(G.exploredFraction(state) * 100).toFixed(1)}%`;
+  const m = G.modeOf(state);
+  const turnTxt = m.turnLimit ? `Turn ${state.turn}/${m.turnLimit}` : `Turn ${state.turn}`;
+  $('#hud-age').textContent = `${m.icon} ${AGES[state.age].name} · ${G.formatYear(state.year)} · ${turnTxt} · 🗺️ ${(G.exploredFraction(state) * 100).toFixed(1)}%/${Math.round(m.victory * 100)}%`;
   const chips = RESOURCE_KEYS.map((k) => {
     const d = inc[k] || 0;
     return `<div class="res" title="${RESOURCES[k].name}"><b>${RESOURCES[k].icon} ${fmt(Math.floor(state.res[k]))}</b><span class="d${d < 0 ? ' neg' : ''}">${d > 0 ? '+' : ''}${fmt(d)}</span></div>`;
@@ -503,12 +538,12 @@ function citySheet(cityId) {
   const city = state.cities.find((c) => c.id === cityId);
   if (!city) return closeSheet();
   const rep = G.cityReports(state).find((r) => r.city.id === cityId);
-  const need = 8 + 3 * city.pop;
+  const need = G.growthNeed(state, city);
   const prod = Object.entries(rep.out).filter(([, v]) => v).map(([k, v]) => `<span>${RESOURCES[k].icon} ${fmt(v)}</span>`).join('');
-  const blds = G.buildingOptions(state, city).map(({ def, ok, reason }) => `
+  const blds = G.buildingOptions(state, city).map(({ def, cost, ok, reason }) => `
     <div class="card${reason === 'Built' ? ' owned' : ''}">
       <div class="list-item"><span class="ico">${def.icon}</span><span class="grow"><h4>${esc(def.name)}</h4><span class="meta">${esc(def.desc)}</span>
-      ${reason === 'Built' ? '' : costHtml(def.cost)}</span>
+      ${reason === 'Built' ? '' : costHtml(cost)}</span>
       ${reason === 'Built' ? '<span>✔</span>' : `<button class="btn btn-small${ok ? ' btn-primary' : ''}" data-action="build" data-city="${city.id}" data-id="${def.id}" ${ok ? '' : 'disabled'}>${ok ? 'Build' : esc(reason)}</button>`}</div>
     </div>`).join('');
   const dom = domesticRouteOptions(state, city.id).filter((o) => o.reason !== 'Too close to be worthwhile');
@@ -641,12 +676,12 @@ function advancesSheet() {
   const as = G.ageStatus(state);
   let ageCard;
   if (as.final) {
-    ageCard = `<div class="card owned"><h4>🏛️ ${AGES[state.age].name}</h4><div class="meta">You have reached the final age. Map ${Math.round(VICTORY_EXPLORED_FRACTION * 100)}% of the world to win (now ${(G.exploredFraction(state) * 100).toFixed(1)}%).</div></div>`;
+    ageCard = `<div class="card owned"><h4>🏛️ ${AGES[state.age].name}</h4><div class="meta">You have reached the final age. Map ${Math.round(G.modeOf(state).victory * 100)}% of the world to win (now ${(G.exploredFraction(state) * 100).toFixed(1)}%).</div></div>`;
   } else {
     const reqs = as.reqs.map((r) => `<div class="${r.met ? 'ok-note' : 'reason'}">${r.met ? '✔' : '✗'} ${esc(r.label)} (${r.have})</div>`).join('');
     ageCard = `<div class="card"><h4>🏛️ Advance to the ${esc(as.next.name)}</h4>
       <div class="meta">New buildings, advances, bigger expeditions, and your people's look will change.</div>
-      ${reqs}${costHtml(as.next.cost)}
+      ${reqs}${costHtml(as.cost)}
       <button class="btn${as.ok ? ' btn-primary' : ''}" data-action="advance-age" ${as.ok ? '' : 'disabled'}>Enter the ${esc(as.next.name)}</button></div>`;
   }
   const caps = G.getCaps(state);
@@ -661,7 +696,7 @@ function advancesSheet() {
     return `<h3 style="margin:14px 0 6px">${esc(age.name)} ${age.id > state.age ? '🔒' : ''}</h3>` + list.map((a) => {
       const s = G.advanceStatus(state, a);
       return `<div class="card${s.owned ? ' owned' : age.id > state.age ? ' locked' : ''}"><div class="list-item"><span class="ico">${a.icon}</span>
-        <span class="grow"><h4>${esc(a.name)}</h4><span class="meta">${esc(a.desc)}</span>${s.owned ? '' : costHtml(a.cost)}${!s.ok && !s.owned && s.reason !== 'Too costly' ? `<div class="reason">${esc(s.reason)}</div>` : ''}</span>
+        <span class="grow"><h4>${esc(a.name)}</h4><span class="meta">${esc(a.desc)}</span>${s.owned ? '' : costHtml(G.modeCost(state, a.cost))}${!s.ok && !s.owned && s.reason !== 'Too costly' ? `<div class="reason">${esc(s.reason)}</div>` : ''}</span>
         ${s.owned ? '<span>✔</span>' : `<button class="btn btn-small${s.ok ? ' btn-primary' : ''}" data-action="learn" data-id="${a.id}" ${s.ok ? '' : 'disabled'}>Learn</button>`}</div></div>`;
     }).join('');
   }).join('');
@@ -716,7 +751,7 @@ function chronicleSheet() {
 
 function howToSheet() {
   openSheet('How to Play', `
-    <div class="card"><h4>🎯 Goal</h4>Guide your people from the Stone Age to the Modern Age and map at least half of the Earth.</div>
+    <div class="card"><h4>🎯 Goal</h4>Guide your people from the Stone Age to the Modern Age and map the Earth.<br>⚡ <b>Quick Play</b> (10–15 min): map ${Math.round(MODES.quick.victory * 100)}% of the world in the Modern Age within ${MODES.quick.turnLimit} turns. Everything is cheaper and faster.<br>🌍 <b>Epic Journey</b>: map half the world. The world keeps turning while you are away (a season every ${MODES.epic.idleMinutesPerTurn} min, up to ${MODES.epic.idleMaxTurns}). Each mode has its own save.</div>
     <div class="card"><h4>🧭 Expeditions</h4>Tap <b>Explore</b>, then tap anywhere on the map. Expeditions spend people, 🍖 food and 🧥 clothing (and 🪵 wood for boats). They map the land as they travel and bring back loot from resource sites they pass — 🪙 gold, ⛏️ iron, 💎 luxuries. Dangerous lands (ice, desert, jungle, mountains, open sea) can cost lives. Bigger parties are safer and carry more.</div>
     <div class="card"><h4>🏕️ Settlements</h4>Found new settlements on explored land. Each works nearby tiles — including discovered resource sites — and grows when it has spare food. Build granaries, harbors, libraries and more.</div>
     <div class="card"><h4>🤝 Other peoples</h4>Peoples from bands to empires live across the world. Gift, trade, share knowledge, demand tribute or conquer them. Conquest costs population power; hostile warlike peoples may raid you.</div>
@@ -725,9 +760,18 @@ function howToSheet() {
 }
 
 // ---------------- turn ----------------
-function doEndTurn() {
-  const prevAge = state.age;
-  const events = endTurn(state);
+function finalHtml() {
+  const m = G.modeOf(state);
+  const time = state.mode === 'quick' ? `<div><span>Time played</span> ${fmtDuration(state.playMs)}</div>` : '';
+  return `<div class="stat-grid">
+      <div><span>Result</span> ${state.won ? '🏆 Victory' : '⌛ Ended'}</div><div><span>Turns</span> ${state.wonTurn || state.turn}${m.turnLimit ? '/' + m.turnLimit : ''}</div>
+      <div><span>Age</span> ${AGES[state.age].name}</div><div><span>Mapped</span> ${(G.exploredFraction(state) * 100).toFixed(1)}%</div>
+      <div><span>Settlements</span> ${state.cities.length}</div><div><span>Peoples met</span> ${state.civs.filter((c) => c.met).length}</div>
+      ${time}<div><span>Score</span> <b>${G.score(state)}</b></div></div>
+    <button class="btn btn-primary" data-action="new-game">New game</button>`;
+}
+
+function showEventModals(events) {
   for (const ev of events) {
     if (ev.important) {
       if (ev.expedition) {
@@ -745,7 +789,18 @@ function doEndTurn() {
       toast(`${ev.icon} ${ev.text}`);
     }
   }
-  if (state.age !== prevAge) updateHud();
+}
+
+function doEndTurn() {
+  if (state.over) {
+    showModal({ icon: state.won ? '🏆' : '⌛', title: 'Your journey has ended', html: finalHtml() });
+    return;
+  }
+  const events = endTurn(state);
+  for (const ev of events) {
+    if (ev.victory || ev.final) ev.html = `<p>${esc(ev.text)}</p>${finalHtml()}${ev.victory && state.mode === 'epic' ? '<p class="meta">You can keep playing this world after closing this.</p>' : ''}`;
+  }
+  showEventModals(events);
   updateHud();
   if (sheetRefresh && !$('#sheet').classList.contains('hidden')) sheetRefresh();
   save();
@@ -757,13 +812,15 @@ function handleAction(el) {
   const d = el.dataset;
   switch (a) {
     case 'new-game':
+      closeModal();
+      closeSheet();
       setup = randomSetup();
       showScreen('setup-screen');
       renderSetup();
       break;
     case 'continue': {
-      const s = loadSave();
-      if (s) { state = s; startGameView(); } else toast('No saved game found.', true);
+      const s = loadSave(d.mode);
+      if (s) { state = s; startGameView(); resumeWorld(); } else toast('No saved game found.', true);
       break;
     }
     case 'how-to': howToSheet(); break;
@@ -875,8 +932,32 @@ function act(r) {
   }
 }
 
+// Epic Journey: apply the seasons that passed while the player was away.
+function resumeWorld() {
+  if (!state) return;
+  const before = { turn: state.turn, explored: state.exploredCount, pop: G.totalPopulation(state) };
+  const { turns, events } = catchUp(state);
+  if (!turns) return;
+  const important = events.filter((e) => e.important || e.icon === '📈');
+  const list = important.slice(0, 12).map((e) => `<div class="log-entry"><span>${e.icon}</span><span class="grow">${esc(e.text)}</span></div>`).join('');
+  showModal({
+    icon: '🌙',
+    title: 'While you were away',
+    html: `<p>${turns} season${turns > 1 ? 's' : ''} passed (${G.formatYear(state.year)} now).</p>
+      <div class="stat-grid"><div><span>Population</span> ${before.pop} → ${G.totalPopulation(state)}</div><div><span>Mapped</span> +${state.exploredCount - before.explored} tiles</div></div>
+      ${list || '<p>All was quiet in your lands.</p>'}`,
+  });
+  updateHud();
+  save();
+}
+
 function refreshTitle() {
-  $('#continue-btn').hidden = !localStorage.getItem(SAVE_KEY);
+  const box = $('#continue-box');
+  box.innerHTML = Object.values(MODES).map((m) => {
+    const sum = saveSummary(m.id);
+    if (!sum) return '';
+    return `<button class="btn" data-action="continue" data-mode="${m.id}">${m.icon} Continue ${esc(m.name)}<br><small style="font-weight:400">${esc(sum.civ)} · ${esc(sum.age)} · Turn ${sum.turn}${sum.done ? ' · finished' : ''}</small></button>`;
+  }).join('');
   requestAnimationFrame(drawTitleBg);
 }
 
@@ -887,7 +968,10 @@ document.addEventListener('click', (e) => {
 });
 $('#setup-body').addEventListener('click', bindSetupClicks);
 window.addEventListener('resize', () => { if (!$('#title-screen').classList.contains('hidden')) drawTitleBg(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) save();
+  else if (state && !$('#game-screen').classList.contains('hidden')) resumeWorld();
+});
 
 refreshTitle();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
