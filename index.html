@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#3b2716" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="Ages of Exploration — lead your people from prehistory to the modern age, mapping the Earth through daring expeditions." />
+  <title>Ages of Exploration</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Title -->
+    <section id="title-screen" class="screen">
+      <canvas id="title-bg" aria-hidden="true"></canvas>
+      <div class="title-card panel">
+        <div class="title-emblem">🧭</div>
+        <h1>Ages of<br />Exploration</h1>
+        <p class="tagline">From the first campfire to the last blank on the map.</p>
+        <button class="btn btn-primary" data-action="new-game">New Game</button>
+        <button class="btn" data-action="continue" id="continue-btn" hidden>Continue</button>
+        <button class="btn btn-ghost" data-action="how-to">How to Play</button>
+      </div>
+    </section>
+
+    <!-- New game setup -->
+    <section id="setup-screen" class="screen hidden">
+      <header class="setup-head">
+        <button class="icon-btn" data-action="back-title" aria-label="Back">←</button>
+        <h2>Found Your People</h2>
+        <button class="icon-btn" data-action="randomize" aria-label="Randomize">🎲</button>
+      </header>
+      <div class="setup-body" id="setup-body"></div>
+      <footer class="setup-foot">
+        <button class="btn btn-primary btn-wide" data-action="begin">Begin in the Stone Age</button>
+      </footer>
+    </section>
+
+    <!-- Game -->
+    <section id="game-screen" class="screen hidden">
+      <header id="hud">
+        <div id="hud-top">
+          <button id="leader-btn" class="leader-btn" data-action="empire" aria-label="Your empire">
+            <canvas id="leader-mini" width="88" height="88"></canvas>
+          </button>
+          <div class="hud-title">
+            <div id="hud-civ" class="hud-civ"></div>
+            <div id="hud-age" class="hud-age"></div>
+          </div>
+          <button class="icon-btn" data-action="chronicle" aria-label="Chronicle">📖</button>
+        </div>
+        <div id="res-bar"></div>
+      </header>
+      <div id="map-wrap">
+        <canvas id="map"></canvas>
+        <div id="mode-banner" class="mode-banner hidden"></div>
+        <div class="map-tools">
+          <button class="icon-btn round" data-action="zoom-in" aria-label="Zoom in">＋</button>
+          <button class="icon-btn round" data-action="zoom-out" aria-label="Zoom out">－</button>
+          <button class="icon-btn round" data-action="home" aria-label="Go to capital">🏠</button>
+        </div>
+        <div id="tile-card" class="tile-card panel hidden"></div>
+      </div>
+      <nav id="actions">
+        <button data-action="mode-explore"><span>🧭</span>Explore</button>
+        <button data-action="mode-settle"><span>🏕️</span>Settle</button>
+        <button data-action="peoples"><span>🤝</span>Peoples</button>
+        <button data-action="cities"><span>🏛️</span>Cities</button>
+        <button data-action="advances"><span>📜</span>Advance</button>
+        <button data-action="end-turn" class="end-turn"><span>⏳</span>End Turn</button>
+      </nav>
+    </section>
+
+    <!-- Bottom sheet -->
+    <div id="sheet" class="sheet hidden" role="dialog" aria-modal="true">
+      <div class="sheet-backdrop" data-action="close-sheet"></div>
+      <div class="sheet-panel panel">
+        <header class="sheet-head">
+          <h2 id="sheet-title"></h2>
+          <button class="icon-btn" data-action="close-sheet" aria-label="Close">✕</button>
+        </header>
+        <div id="sheet-body" class="sheet-body"></div>
+      </div>
+    </div>
+
+    <!-- Event modal -->
+    <div id="modal" class="modal hidden" role="alertdialog" aria-modal="true">
+      <div class="modal-card panel">
+        <div id="modal-icon" class="modal-icon"></div>
+        <h2 id="modal-title"></h2>
+        <div id="modal-text"></div>
+        <button class="btn btn-primary" data-action="close-modal">Continue</button>
+      </div>
+    </div>
+
+    <div id="toasts" aria-live="polite"></div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

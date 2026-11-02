@@ -1,0 +1,18 @@
+{
+  "name": "explorer-game-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ages of Exploration — a mobile strategy and resource-gathering exploration game.",
+  "type": "module",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "test": "node --test test/*.test.js",
+    "build:earth": "node tools/build-earth.mjs",
+    "smoke": "node tools/smoke.mjs"
+  },
+  "devDependencies": {
+    "d3-geo": "^3.1.1",
+    "topojson-client": "3.1.0",
+    "world-atlas": "2.0.2"
+  }
+}
